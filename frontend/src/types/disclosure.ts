@@ -11,10 +11,19 @@ export interface Disclosure {
   description: string;
   key_differences: string;
   status: "pending" | "reviewed" | "approved" | "rejected";
+  review_notes: string | null;
   original_filename: string | null;
   inventors: Inventor[];
   created_at: string;
   updated_at: string;
+}
+
+export interface DisclosureUpdate {
+  title?: string;
+  description?: string;
+  key_differences?: string;
+  status?: Disclosure["status"];
+  review_notes?: string;
 }
 
 export interface UploadResponse {

@@ -6,6 +6,7 @@ CREATE TABLE disclosures (
     description TEXT NOT NULL,
     key_differences TEXT NOT NULL,
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'approved', 'rejected')),
+    review_notes TEXT,
     original_filename TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

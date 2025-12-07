@@ -17,17 +17,40 @@ router = APIRouter(prefix="/api/disclosures", tags=["disclosures"])
 
 
 @router.get("", response_model=list[Disclosure])
-async def list_disclosures():
-    """List all disclosures ordered by creation date."""
+async def list_disclosures(
+    search: str | None = None,
+    status: str | None = None,
+):
+    """List all disclosures with optional search and filter."""
     async with get_connection() as conn:
-        rows = await conn.fetch(
-            """
+        query = """
             SELECT id, docket_number, title, description, key_differences,
-                   status, original_filename, created_at, updated_at
+                   status, review_notes, original_filename, created_at, updated_at
             FROM disclosures
-            ORDER BY created_at DESC
+            WHERE 1=1
+        """
+        params = []
+        param_idx = 1
+
+        if search:
+            query += f"""
+                AND (
+                    title ILIKE ${param_idx}
+                    OR description ILIKE ${param_idx}
+                    OR docket_number ILIKE ${param_idx}
+                )
             """
-        )
+            params.append(f"%{search}%")
+            param_idx += 1
+
+        if status:
+            query += f" AND status = ${param_idx}"
+            params.append(status)
+            param_idx += 1
+
+        query += " ORDER BY created_at DESC"
+
+        rows = await conn.fetch(query, *params)
         return [dict(row) for row in rows]
 
 
@@ -38,7 +61,7 @@ async def get_disclosure(disclosure_id: UUID):
         row = await conn.fetchrow(
             """
             SELECT id, docket_number, title, description, key_differences,
-                   status, original_filename, created_at, updated_at
+                   status, review_notes, original_filename, created_at, updated_at
             FROM disclosures
             WHERE id = $1
             """,
@@ -105,7 +128,7 @@ async def upload_disclosure(file: UploadFile = File(...)):
                 INSERT INTO disclosures (docket_number, title, description, key_differences, original_filename)
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id, docket_number, title, description, key_differences,
-                          status, original_filename, created_at, updated_at
+                          status, review_notes, original_filename, created_at, updated_at
                 """,
                 docket_number,
                 extracted["title"],
@@ -175,6 +198,11 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
             values.append(update.status)
             param_idx += 1
 
+        if update.review_notes is not None:
+            updates.append(f"review_notes = ${param_idx}")
+            values.append(update.review_notes)
+            param_idx += 1
+
         if not updates:
             raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -186,7 +214,7 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
             SET {", ".join(updates)}
             WHERE id = ${param_idx}
             RETURNING id, docket_number, title, description, key_differences,
-                      status, original_filename, created_at, updated_at
+                      status, review_notes, original_filename, created_at, updated_at
         """
 
         row = await conn.fetchrow(query, *values)

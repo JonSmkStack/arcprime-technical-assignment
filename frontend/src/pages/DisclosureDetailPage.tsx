@@ -1,12 +1,19 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getDisclosure } from "../api/disclosures";
-import type { Disclosure } from "../types/disclosure";
+import { getDisclosure, updateDisclosure } from "../api/disclosures";
+import type { Disclosure, DisclosureUpdate } from "../types/disclosure";
 
 type LoadingState =
   | { status: "loading" }
   | { status: "success"; disclosure: Disclosure }
   | { status: "error"; message: string };
+
+const STATUS_OPTIONS: Disclosure["status"][] = [
+  "pending",
+  "reviewed",
+  "approved",
+  "rejected",
+];
 
 function StatusBadge({ status }: { status: Disclosure["status"] }) {
   const styles = {
@@ -52,9 +59,27 @@ function Section({
   );
 }
 
+interface EditFormData {
+  title: string;
+  description: string;
+  key_differences: string;
+  status: Disclosure["status"];
+  review_notes: string;
+}
+
 export function DisclosureDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [state, setState] = useState<LoadingState>({ status: "loading" });
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [formData, setFormData] = useState<EditFormData>({
+    title: "",
+    description: "",
+    key_differences: "",
+    status: "pending",
+    review_notes: "",
+  });
 
   useEffect(() => {
     if (!id) return;
@@ -66,6 +91,13 @@ export function DisclosureDetailPage() {
         const disclosure = await getDisclosure(id!);
         if (!cancelled) {
           setState({ status: "success", disclosure });
+          setFormData({
+            title: disclosure.title,
+            description: disclosure.description,
+            key_differences: disclosure.key_differences,
+            status: disclosure.status,
+            review_notes: disclosure.review_notes || "",
+          });
         }
       } catch (error) {
         if (!cancelled) {
@@ -84,6 +116,65 @@ export function DisclosureDetailPage() {
       cancelled = true;
     };
   }, [id]);
+
+  const handleSave = async () => {
+    if (!id || state.status !== "success") return;
+
+    setIsSaving(true);
+    setSaveError(null);
+
+    try {
+      const update: DisclosureUpdate = {};
+
+      // Only include changed fields
+      if (formData.title !== state.disclosure.title) {
+        update.title = formData.title;
+      }
+      if (formData.description !== state.disclosure.description) {
+        update.description = formData.description;
+      }
+      if (formData.key_differences !== state.disclosure.key_differences) {
+        update.key_differences = formData.key_differences;
+      }
+      if (formData.status !== state.disclosure.status) {
+        update.status = formData.status;
+      }
+      if (formData.review_notes !== (state.disclosure.review_notes || "")) {
+        update.review_notes = formData.review_notes;
+      }
+
+      // If nothing changed, just exit edit mode
+      if (Object.keys(update).length === 0) {
+        setIsEditing(false);
+        return;
+      }
+
+      const updated = await updateDisclosure(id, update);
+      setState({ status: "success", disclosure: { ...state.disclosure, ...updated } });
+      setIsEditing(false);
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "Failed to save changes"
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    if (state.status !== "success") return;
+
+    // Reset form to current disclosure values
+    setFormData({
+      title: state.disclosure.title,
+      description: state.disclosure.description,
+      key_differences: state.disclosure.key_differences,
+      status: state.disclosure.status,
+      review_notes: state.disclosure.review_notes || "",
+    });
+    setIsEditing(false);
+    setSaveError(null);
+  };
 
   if (state.status === "loading") {
     return (
@@ -129,21 +220,79 @@ export function DisclosureDetailPage() {
               <span className="font-mono text-sm text-gray-500">
                 {disclosure.docket_number}
               </span>
-              <h1 className="text-xl font-semibold text-gray-900 mt-1">
-                {disclosure.title}
-              </h1>
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={formData.title}
+                  onChange={(e) =>
+                    setFormData({ ...formData, title: e.target.value })
+                  }
+                  className="block w-full text-xl font-semibold text-gray-900 mt-1 px-2 py-1 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                />
+              ) : (
+                <h1 className="text-xl font-semibold text-gray-900 mt-1">
+                  {disclosure.title}
+                </h1>
+              )}
             </div>
-            <StatusBadge status={disclosure.status} />
+            {isEditing ? (
+              <select
+                value={formData.status}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    status: e.target.value as Disclosure["status"],
+                  })
+                }
+                className="px-3 py-1 text-sm font-medium rounded-md border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+              >
+                {STATUS_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <StatusBadge status={disclosure.status} />
+            )}
           </div>
         </div>
 
         <div className="px-6 py-6">
+          {saveError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+              {saveError}
+            </div>
+          )}
+
           <Section title="Description">
-            <p className="whitespace-pre-wrap">{disclosure.description}</p>
+            {isEditing ? (
+              <textarea
+                value={formData.description}
+                onChange={(e) =>
+                  setFormData({ ...formData, description: e.target.value })
+                }
+                rows={6}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              />
+            ) : (
+              <p className="whitespace-pre-wrap">{disclosure.description}</p>
+            )}
           </Section>
 
           <Section title="Key Differences">
-            <p className="whitespace-pre-wrap">{disclosure.key_differences}</p>
+            {isEditing ? (
+              <textarea
+                value={formData.key_differences}
+                onChange={(e) =>
+                  setFormData({ ...formData, key_differences: e.target.value })
+                }
+                rows={4}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              />
+            ) : (
+              <p className="whitespace-pre-wrap">{disclosure.key_differences}</p>
+            )}
           </Section>
 
           <Section title="Inventors">
@@ -171,6 +320,24 @@ export function DisclosureDetailPage() {
             )}
           </Section>
 
+          <Section title="Review Notes">
+            {isEditing ? (
+              <textarea
+                value={formData.review_notes}
+                onChange={(e) =>
+                  setFormData({ ...formData, review_notes: e.target.value })
+                }
+                rows={4}
+                placeholder="Add notes about this disclosure for other reviewers..."
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              />
+            ) : disclosure.review_notes ? (
+              <p className="whitespace-pre-wrap">{disclosure.review_notes}</p>
+            ) : (
+              <p className="text-gray-500 italic">No review notes</p>
+            )}
+          </Section>
+
           <div className="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
             {disclosure.original_filename && (
               <Section title="Original File">
@@ -184,6 +351,38 @@ export function DisclosureDetailPage() {
                 {formatDateTime(disclosure.created_at)}
               </span>
             </Section>
+          </div>
+
+          {/* Edit/Save buttons */}
+          <div className="mt-6 pt-4 border-t border-gray-200 flex justify-end gap-3">
+            {isEditing ? (
+              <>
+                <button
+                  onClick={handleCancel}
+                  disabled={isSaving}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isSaving && (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                  )}
+                  Save Changes
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setIsEditing(true)}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+              >
+                Edit Disclosure
+              </button>
+            )}
           </div>
         </div>
       </div>

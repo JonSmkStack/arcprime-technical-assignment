@@ -36,12 +36,14 @@ class DisclosureUpdate(BaseModel):
     description: str | None = None
     key_differences: str | None = None
     status: str | None = None
+    review_notes: str | None = None
 
 
 class Disclosure(DisclosureBase):
     id: UUID
     docket_number: str
     status: str
+    review_notes: str | None = None
     original_filename: str | None
     created_at: datetime
     updated_at: datetime
