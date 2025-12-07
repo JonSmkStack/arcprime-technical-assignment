@@ -1,0 +1,26 @@
+export interface Inventor {
+  id: string;
+  name: string;
+  email: string | null;
+}
+
+export interface Disclosure {
+  id: string;
+  docket_number: string;
+  title: string;
+  description: string;
+  key_differences: string;
+  status: "pending" | "reviewed" | "approved" | "rejected";
+  original_filename: string | null;
+  inventors: Inventor[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UploadResponse {
+  disclosure: Disclosure;
+}
+
+export interface ApiError {
+  detail: string;
+}

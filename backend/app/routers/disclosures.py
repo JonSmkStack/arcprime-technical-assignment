@@ -1,0 +1,206 @@
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, UploadFile, File
+
+from app.database import get_connection, get_next_docket_number
+from app.models import (
+    Disclosure,
+    DisclosureWithInventors,
+    DisclosureUpdate,
+    Inventor,
+    UploadResponse,
+)
+from app.services.pdf_processor import extract_text_from_pdf
+from app.services.extractor import extract_disclosure_info
+
+router = APIRouter(prefix="/api/disclosures", tags=["disclosures"])
+
+
+@router.get("", response_model=list[Disclosure])
+async def list_disclosures():
+    """List all disclosures ordered by creation date."""
+    async with get_connection() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, docket_number, title, description, key_differences,
+                   status, original_filename, created_at, updated_at
+            FROM disclosures
+            ORDER BY created_at DESC
+            """
+        )
+        return [dict(row) for row in rows]
+
+
+@router.get("/{disclosure_id}", response_model=DisclosureWithInventors)
+async def get_disclosure(disclosure_id: UUID):
+    """Get a single disclosure with its inventors."""
+    async with get_connection() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, docket_number, title, description, key_differences,
+                   status, original_filename, created_at, updated_at
+            FROM disclosures
+            WHERE id = $1
+            """,
+            disclosure_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Disclosure not found")
+
+        disclosure = dict(row)
+
+        inventor_rows = await conn.fetch(
+            """
+            SELECT id, disclosure_id, name, email, created_at
+            FROM inventors
+            WHERE disclosure_id = $1
+            ORDER BY created_at
+            """,
+            disclosure_id,
+        )
+        disclosure["inventors"] = [dict(r) for r in inventor_rows]
+
+        return disclosure
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_disclosure(file: UploadFile = File(...)):
+    """Upload a PDF and extract disclosure information."""
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    try:
+        content = await file.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to read uploaded file")
+
+    # Extract text from PDF
+    try:
+        text = extract_text_from_pdf(content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not text or len(text.strip()) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract sufficient text from PDF. The file may be image-based or corrupted.",
+        )
+
+    # Extract structured information using AI
+    try:
+        extracted = await extract_disclosure_info(text)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract information from document: {str(e)}",
+        )
+
+    # Generate docket number and save to database
+    docket_number = await get_next_docket_number()
+
+    async with get_connection() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO disclosures (docket_number, title, description, key_differences, original_filename)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, docket_number, title, description, key_differences,
+                          status, original_filename, created_at, updated_at
+                """,
+                docket_number,
+                extracted["title"],
+                extracted["description"],
+                extracted["key_differences"],
+                file.filename,
+            )
+            disclosure = dict(row)
+
+            inventors = []
+            for inv in extracted.get("inventors", []):
+                inv_row = await conn.fetchrow(
+                    """
+                    INSERT INTO inventors (disclosure_id, name, email)
+                    VALUES ($1, $2, $3)
+                    RETURNING id, disclosure_id, name, email, created_at
+                    """,
+                    disclosure["id"],
+                    inv.get("name", "Unknown"),
+                    inv.get("email"),
+                )
+                inventors.append(dict(inv_row))
+
+            disclosure["inventors"] = inventors
+
+    return UploadResponse(
+        disclosure=DisclosureWithInventors(**disclosure),
+        message="Disclosure created successfully",
+    )
+
+
+@router.patch("/{disclosure_id}", response_model=Disclosure)
+async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
+    """Update a disclosure's fields."""
+    async with get_connection() as conn:
+        # Check if exists
+        existing = await conn.fetchval(
+            "SELECT id FROM disclosures WHERE id = $1", disclosure_id
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Disclosure not found")
+
+        # Build update query dynamically
+        updates = []
+        values = []
+        param_idx = 1
+
+        if update.title is not None:
+            updates.append(f"title = ${param_idx}")
+            values.append(update.title)
+            param_idx += 1
+
+        if update.description is not None:
+            updates.append(f"description = ${param_idx}")
+            values.append(update.description)
+            param_idx += 1
+
+        if update.key_differences is not None:
+            updates.append(f"key_differences = ${param_idx}")
+            values.append(update.key_differences)
+            param_idx += 1
+
+        if update.status is not None:
+            if update.status not in ("pending", "reviewed", "approved", "rejected"):
+                raise HTTPException(status_code=400, detail="Invalid status value")
+            updates.append(f"status = ${param_idx}")
+            values.append(update.status)
+            param_idx += 1
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        updates.append("updated_at = NOW()")
+        values.append(disclosure_id)
+
+        query = f"""
+            UPDATE disclosures
+            SET {", ".join(updates)}
+            WHERE id = ${param_idx}
+            RETURNING id, docket_number, title, description, key_differences,
+                      status, original_filename, created_at, updated_at
+        """
+
+        row = await conn.fetchrow(query, *values)
+        return dict(row)
+
+
+@router.delete("/{disclosure_id}")
+async def delete_disclosure(disclosure_id: UUID):
+    """Delete a disclosure and its inventors."""
+    async with get_connection() as conn:
+        result = await conn.execute(
+            "DELETE FROM disclosures WHERE id = $1", disclosure_id
+        )
+        if result == "DELETE 0":
+            raise HTTPException(status_code=404, detail="Disclosure not found")
+
+    return {"message": "Disclosure deleted successfully"}
