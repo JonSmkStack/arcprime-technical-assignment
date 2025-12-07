@@ -21,6 +21,14 @@ CREATE TABLE inventors (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Status history table
+CREATE TABLE status_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    disclosure_id UUID NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    changed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Sequence for docket numbers
 CREATE SEQUENCE docket_seq START 1;
 
@@ -28,3 +36,4 @@ CREATE SEQUENCE docket_seq START 1;
 CREATE INDEX idx_inventors_disclosure_id ON inventors(disclosure_id);
 CREATE INDEX idx_disclosures_status ON disclosures(status);
 CREATE INDEX idx_disclosures_created_at ON disclosures(created_at DESC);
+CREATE INDEX idx_status_history_disclosure_id ON status_history(disclosure_id);

@@ -83,3 +83,49 @@ export async function updateDisclosure(
 
   return response.json();
 }
+
+export async function deleteDisclosure(id: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/disclosures/${id}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error("Disclosure not found");
+    }
+    const error = await response.json().catch(() => ({ detail: "Delete failed" }));
+    throw new Error(error.detail || "Delete failed");
+  }
+}
+
+export async function exportDisclosuresCSV(params?: SearchParams): Promise<void> {
+  const searchParams = new URLSearchParams();
+  if (params?.search) {
+    searchParams.set("search", params.search);
+  }
+  if (params?.status) {
+    searchParams.set("status", params.status);
+  }
+
+  const queryString = searchParams.toString();
+  const url = queryString
+    ? `${API_BASE}/disclosures/export/csv?${queryString}`
+    : `${API_BASE}/disclosures/export/csv`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("Failed to export disclosures");
+  }
+
+  // Download the CSV file
+  const blob = await response.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = "disclosures.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getDisclosures, type SearchParams } from "../api/disclosures";
+import { getDisclosures, exportDisclosuresCSV, type SearchParams } from "../api/disclosures";
 import type { Disclosure } from "../types/disclosure";
 
 type LoadingState =
@@ -46,6 +46,7 @@ export function DisclosuresPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<Disclosure["status"] | "">("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
 
   // Debounce search input
   useEffect(() => {
@@ -87,17 +88,58 @@ export function DisclosuresPage() {
     setStatusFilter("");
   };
 
+  const handleExportCSV = async () => {
+    setIsExporting(true);
+    try {
+      const params: SearchParams = {};
+      if (debouncedSearch) {
+        params.search = debouncedSearch;
+      }
+      if (statusFilter) {
+        params.status = statusFilter;
+      }
+      await exportDisclosuresCSV(params);
+    } catch (error) {
+      console.error("Export failed:", error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const hasFilters = search || statusFilter;
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Disclosures</h1>
-        {state.status === "success" && (
-          <span className="text-sm text-gray-500">
-            {state.disclosures.length} {state.disclosures.length === 1 ? "result" : "results"}
-          </span>
-        )}
+        <div className="flex items-center gap-4">
+          {state.status === "success" && state.disclosures.length > 0 && (
+            <button
+              onClick={handleExportCSV}
+              disabled={isExporting}
+              className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2"
+            >
+              {isExporting ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-500 border-t-transparent"></div>
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Export CSV
+                </>
+              )}
+            </button>
+          )}
+          {state.status === "success" && (
+            <span className="text-sm text-gray-500">
+              {state.disclosures.length} {state.disclosures.length === 1 ? "result" : "results"}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Search and Filter Bar */}

@@ -49,8 +49,16 @@ class Disclosure(DisclosureBase):
     updated_at: datetime
 
 
+class StatusHistoryEntry(BaseModel):
+    id: UUID
+    disclosure_id: UUID
+    status: str
+    changed_at: datetime
+
+
 class DisclosureWithInventors(Disclosure):
     inventors: list[Inventor] = []
+    status_history: list[StatusHistoryEntry] = []
 
 
 # Response for upload

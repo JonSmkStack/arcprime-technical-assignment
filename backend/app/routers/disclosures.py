@@ -1,6 +1,9 @@
+import csv
+import io
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 
 from app.database import get_connection, get_next_docket_number
 from app.models import (
@@ -8,6 +11,7 @@ from app.models import (
     DisclosureWithInventors,
     DisclosureUpdate,
     Inventor,
+    StatusHistoryEntry,
     UploadResponse,
 )
 from app.services.pdf_processor import extract_text_from_pdf
@@ -54,6 +58,110 @@ async def list_disclosures(
         return [dict(row) for row in rows]
 
 
+@router.get("/export/csv")
+async def export_disclosures_csv(
+    search: str | None = None,
+    status: str | None = None,
+):
+    """Export disclosures to CSV with inventor information."""
+    async with get_connection() as conn:
+        # Build query with same filters as list endpoint
+        query = """
+            SELECT d.id, d.docket_number, d.title, d.description, d.key_differences,
+                   d.status, d.review_notes, d.original_filename, d.created_at, d.updated_at
+            FROM disclosures d
+            WHERE 1=1
+        """
+        params = []
+        param_idx = 1
+
+        if search:
+            query += f"""
+                AND (
+                    d.title ILIKE ${param_idx}
+                    OR d.description ILIKE ${param_idx}
+                    OR d.docket_number ILIKE ${param_idx}
+                )
+            """
+            params.append(f"%{search}%")
+            param_idx += 1
+
+        if status:
+            query += f" AND d.status = ${param_idx}"
+            params.append(status)
+            param_idx += 1
+
+        query += " ORDER BY d.created_at DESC"
+
+        rows = await conn.fetch(query, *params)
+
+        # Get inventors for each disclosure
+        disclosure_ids = [row["id"] for row in rows]
+        inventors_by_disclosure = {}
+
+        if disclosure_ids:
+            inventor_rows = await conn.fetch(
+                """
+                SELECT disclosure_id, name, email
+                FROM inventors
+                WHERE disclosure_id = ANY($1)
+                ORDER BY created_at
+                """,
+                disclosure_ids,
+            )
+            for inv in inventor_rows:
+                did = inv["disclosure_id"]
+                if did not in inventors_by_disclosure:
+                    inventors_by_disclosure[did] = {"names": [], "emails": []}
+                inventors_by_disclosure[did]["names"].append(inv["name"])
+                if inv["email"]:
+                    inventors_by_disclosure[did]["emails"].append(inv["email"])
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow([
+            "Docket Number",
+            "Title",
+            "Description",
+            "Key Differences",
+            "Status",
+            "Review Notes",
+            "Original Filename",
+            "Inventor Names",
+            "Inventor Emails",
+            "Created At",
+            "Updated At",
+        ])
+
+        # Write data rows
+        for row in rows:
+            inv_data = inventors_by_disclosure.get(row["id"], {"names": [], "emails": []})
+            writer.writerow([
+                row["docket_number"],
+                row["title"],
+                row["description"],
+                row["key_differences"],
+                row["status"],
+                row["review_notes"] or "",
+                row["original_filename"] or "",
+                "; ".join(inv_data["names"]),
+                "; ".join(inv_data["emails"]),
+                row["created_at"].isoformat() if row["created_at"] else "",
+                row["updated_at"].isoformat() if row["updated_at"] else "",
+            ])
+
+        output.seek(0)
+
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=disclosures.csv"},
+        )
+
+
 @router.get("/{disclosure_id}", response_model=DisclosureWithInventors)
 async def get_disclosure(disclosure_id: UUID):
     """Get a single disclosure with its inventors."""
@@ -82,6 +190,18 @@ async def get_disclosure(disclosure_id: UUID):
             disclosure_id,
         )
         disclosure["inventors"] = [dict(r) for r in inventor_rows]
+
+        # Fetch status history
+        history_rows = await conn.fetch(
+            """
+            SELECT id, disclosure_id, status, changed_at
+            FROM status_history
+            WHERE disclosure_id = $1
+            ORDER BY changed_at DESC
+            """,
+            disclosure_id,
+        )
+        disclosure["status_history"] = [dict(r) for r in history_rows]
 
         return disclosure
 
@@ -154,6 +274,18 @@ async def upload_disclosure(file: UploadFile = File(...)):
 
             disclosure["inventors"] = inventors
 
+            # Record initial status in history
+            history_row = await conn.fetchrow(
+                """
+                INSERT INTO status_history (disclosure_id, status)
+                VALUES ($1, $2)
+                RETURNING id, disclosure_id, status, changed_at
+                """,
+                disclosure["id"],
+                disclosure["status"],
+            )
+            disclosure["status_history"] = [dict(history_row)]
+
     return UploadResponse(
         disclosure=DisclosureWithInventors(**disclosure),
         message="Disclosure created successfully",
@@ -164,17 +296,20 @@ async def upload_disclosure(file: UploadFile = File(...)):
 async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
     """Update a disclosure's fields."""
     async with get_connection() as conn:
-        # Check if exists
-        existing = await conn.fetchval(
-            "SELECT id FROM disclosures WHERE id = $1", disclosure_id
+        # Check if exists and get current status
+        existing = await conn.fetchrow(
+            "SELECT id, status FROM disclosures WHERE id = $1", disclosure_id
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Disclosure not found")
+
+        current_status = existing["status"]
 
         # Build update query dynamically
         updates = []
         values = []
         param_idx = 1
+        status_changed = False
 
         if update.title is not None:
             updates.append(f"title = ${param_idx}")
@@ -197,6 +332,8 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
             updates.append(f"status = ${param_idx}")
             values.append(update.status)
             param_idx += 1
+            if update.status != current_status:
+                status_changed = True
 
         if update.review_notes is not None:
             updates.append(f"review_notes = ${param_idx}")
@@ -218,6 +355,18 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
         """
 
         row = await conn.fetchrow(query, *values)
+
+        # Record status change in history if status was updated
+        if status_changed:
+            await conn.execute(
+                """
+                INSERT INTO status_history (disclosure_id, status)
+                VALUES ($1, $2)
+                """,
+                disclosure_id,
+                update.status,
+            )
+
         return dict(row)
 
 

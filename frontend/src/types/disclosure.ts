@@ -4,6 +4,13 @@ export interface Inventor {
   email: string | null;
 }
 
+export interface StatusHistoryEntry {
+  id: string;
+  disclosure_id: string;
+  status: "pending" | "reviewed" | "approved" | "rejected";
+  changed_at: string;
+}
+
 export interface Disclosure {
   id: string;
   docket_number: string;
@@ -14,6 +21,7 @@ export interface Disclosure {
   review_notes: string | null;
   original_filename: string | null;
   inventors: Inventor[];
+  status_history: StatusHistoryEntry[];
   created_at: string;
   updated_at: string;
 }

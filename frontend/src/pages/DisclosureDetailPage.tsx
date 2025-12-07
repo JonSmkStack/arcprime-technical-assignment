@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { getDisclosure, updateDisclosure } from "../api/disclosures";
+import { Link, useParams, useNavigate } from "react-router-dom";
+import { getDisclosure, updateDisclosure, deleteDisclosure } from "../api/disclosures";
 import type { Disclosure, DisclosureUpdate } from "../types/disclosure";
 
 type LoadingState =
@@ -69,10 +69,12 @@ interface EditFormData {
 
 export function DisclosureDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [state, setState] = useState<LoadingState>({ status: "loading" });
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [formData, setFormData] = useState<EditFormData>({
     title: "",
     description: "",
@@ -149,8 +151,10 @@ export function DisclosureDetailPage() {
         return;
       }
 
-      const updated = await updateDisclosure(id, update);
-      setState({ status: "success", disclosure: { ...state.disclosure, ...updated } });
+      await updateDisclosure(id, update);
+      // Refetch to get updated status_history
+      const refreshed = await getDisclosure(id);
+      setState({ status: "success", disclosure: refreshed });
       setIsEditing(false);
     } catch (error) {
       setSaveError(
@@ -174,6 +178,26 @@ export function DisclosureDetailPage() {
     });
     setIsEditing(false);
     setSaveError(null);
+  };
+
+  const handleDelete = async () => {
+    if (!id || state.status !== "success") return;
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${state.disclosure.docket_number}"? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeleteError(null);
+
+    try {
+      await deleteDisclosure(id);
+      navigate("/disclosures");
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Failed to delete disclosure"
+      );
+    }
   };
 
   if (state.status === "loading") {
@@ -338,6 +362,37 @@ export function DisclosureDetailPage() {
             )}
           </Section>
 
+          <Section title="Status History">
+            {disclosure.status_history && disclosure.status_history.length > 0 ? (
+              <ul className="space-y-2">
+                {disclosure.status_history.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center gap-3 text-sm"
+                  >
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        {
+                          pending: "bg-yellow-100 text-yellow-800",
+                          reviewed: "bg-blue-100 text-blue-800",
+                          approved: "bg-green-100 text-green-800",
+                          rejected: "bg-red-100 text-red-800",
+                        }[entry.status]
+                      }`}
+                    >
+                      {entry.status.charAt(0).toUpperCase() + entry.status.slice(1)}
+                    </span>
+                    <span className="text-gray-500">
+                      {formatDateTime(entry.changed_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500 italic">No status history</p>
+            )}
+          </Section>
+
           <div className="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
             {disclosure.original_filename && (
               <Section title="Original File">
@@ -353,36 +408,52 @@ export function DisclosureDetailPage() {
             </Section>
           </div>
 
-          {/* Edit/Save buttons */}
-          <div className="mt-6 pt-4 border-t border-gray-200 flex justify-end gap-3">
-            {isEditing ? (
-              <>
-                <button
-                  onClick={handleCancel}
-                  disabled={isSaving}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-                >
-                  {isSaving && (
-                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                  )}
-                  Save Changes
-                </button>
-              </>
-            ) : (
+          {deleteError && (
+            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+              {deleteError}
+            </div>
+          )}
+
+          {/* Edit/Save/Delete buttons */}
+          <div className="mt-6 pt-4 border-t border-gray-200 flex justify-between">
+            {!isEditing && (
               <button
-                onClick={() => setIsEditing(true)}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                onClick={handleDelete}
+                className="px-4 py-2 text-sm font-medium text-red-600 bg-white border border-red-300 rounded-md hover:bg-red-50"
               >
-                Edit Disclosure
+                Delete
               </button>
             )}
+            <div className="flex gap-3 ml-auto">
+              {isEditing ? (
+                <>
+                  <button
+                    onClick={handleCancel}
+                    disabled={isSaving}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isSaving && (
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                    )}
+                    Save Changes
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setIsEditing(true)}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                >
+                  Edit Disclosure
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
