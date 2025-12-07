@@ -20,6 +20,7 @@ export interface Disclosure {
   status: "pending" | "reviewed" | "approved" | "rejected";
   review_notes: string | null;
   original_filename: string | null;
+  pdf_object_key: string | null;
   inventors: Inventor[];
   status_history: StatusHistoryEntry[];
   created_at: string;

@@ -1,9 +1,10 @@
 import csv
 import io
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 
 from app.database import get_connection, get_next_docket_number
 from app.models import (
@@ -16,6 +17,9 @@ from app.models import (
 )
 from app.services.pdf_processor import extract_text_from_pdf
 from app.services.extractor import extract_disclosure_info
+from app.services import storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/disclosures", tags=["disclosures"])
 
@@ -29,7 +33,7 @@ async def list_disclosures(
     async with get_connection() as conn:
         query = """
             SELECT id, docket_number, title, description, key_differences,
-                   status, review_notes, original_filename, created_at, updated_at
+                   status, review_notes, original_filename, pdf_object_key, created_at, updated_at
             FROM disclosures
             WHERE 1=1
         """
@@ -169,7 +173,7 @@ async def get_disclosure(disclosure_id: UUID):
         row = await conn.fetchrow(
             """
             SELECT id, docket_number, title, description, key_differences,
-                   status, review_notes, original_filename, created_at, updated_at
+                   status, review_notes, original_filename, pdf_object_key, created_at, updated_at
             FROM disclosures
             WHERE id = $1
             """,
@@ -248,7 +252,7 @@ async def upload_disclosure(file: UploadFile = File(...)):
                 INSERT INTO disclosures (docket_number, title, description, key_differences, original_filename)
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id, docket_number, title, description, key_differences,
-                          status, review_notes, original_filename, created_at, updated_at
+                          status, review_notes, original_filename, pdf_object_key, created_at, updated_at
                 """,
                 docket_number,
                 extracted["title"],
@@ -257,6 +261,23 @@ async def upload_disclosure(file: UploadFile = File(...)):
                 file.filename,
             )
             disclosure = dict(row)
+
+            # Upload PDF to MinIO storage
+            try:
+                pdf_object_key = storage.upload_pdf(
+                    str(disclosure["id"]),
+                    file.filename,
+                    content,
+                )
+                # Update disclosure with the object key
+                await conn.execute(
+                    "UPDATE disclosures SET pdf_object_key = $1 WHERE id = $2",
+                    pdf_object_key,
+                    disclosure["id"],
+                )
+                disclosure["pdf_object_key"] = pdf_object_key
+            except Exception as e:
+                logger.warning(f"Failed to upload PDF to storage: {e}")
 
             inventors = []
             for inv in extracted.get("inventors", []):
@@ -351,7 +372,7 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
             SET {", ".join(updates)}
             WHERE id = ${param_idx}
             RETURNING id, docket_number, title, description, key_differences,
-                      status, review_notes, original_filename, created_at, updated_at
+                      status, review_notes, original_filename, pdf_object_key, created_at, updated_at
         """
 
         row = await conn.fetchrow(query, *values)
@@ -374,10 +395,52 @@ async def update_disclosure(disclosure_id: UUID, update: DisclosureUpdate):
 async def delete_disclosure(disclosure_id: UUID):
     """Delete a disclosure and its inventors."""
     async with get_connection() as conn:
-        result = await conn.execute(
-            "DELETE FROM disclosures WHERE id = $1", disclosure_id
+        # Get the pdf_object_key before deleting
+        row = await conn.fetchrow(
+            "SELECT pdf_object_key FROM disclosures WHERE id = $1", disclosure_id
         )
-        if result == "DELETE 0":
+        if not row:
             raise HTTPException(status_code=404, detail="Disclosure not found")
 
+        pdf_object_key = row["pdf_object_key"]
+
+        # Delete from database
+        await conn.execute("DELETE FROM disclosures WHERE id = $1", disclosure_id)
+
+        # Delete PDF from MinIO if it exists
+        if pdf_object_key:
+            try:
+                storage.delete_pdf(pdf_object_key)
+            except Exception as e:
+                logger.warning(f"Failed to delete PDF from storage: {e}")
+
     return {"message": "Disclosure deleted successfully"}
+
+
+@router.get("/{disclosure_id}/pdf")
+async def download_disclosure_pdf(disclosure_id: UUID):
+    """Download the original PDF for a disclosure."""
+    async with get_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT original_filename, pdf_object_key FROM disclosures WHERE id = $1",
+            disclosure_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Disclosure not found")
+
+        if not row["pdf_object_key"]:
+            raise HTTPException(status_code=404, detail="PDF not available for this disclosure")
+
+        try:
+            pdf_content = storage.download_pdf(row["pdf_object_key"])
+        except Exception as e:
+            logger.error(f"Failed to download PDF: {e}")
+            raise HTTPException(status_code=500, detail="Failed to retrieve PDF")
+
+        filename = row["original_filename"] or "disclosure.pdf"
+
+        return Response(
+            content=pdf_content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )

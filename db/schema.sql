@@ -8,6 +8,7 @@ CREATE TABLE disclosures (
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'approved', 'rejected')),
     review_notes TEXT,
     original_filename TEXT,
+    pdf_object_key TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

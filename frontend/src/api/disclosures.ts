@@ -129,3 +129,25 @@ export async function exportDisclosuresCSV(params?: SearchParams): Promise<void>
   document.body.removeChild(link);
   window.URL.revokeObjectURL(downloadUrl);
 }
+
+export async function downloadDisclosurePDF(id: string, filename?: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/disclosures/${id}/pdf`);
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error("PDF not available");
+    }
+    throw new Error("Failed to download PDF");
+  }
+
+  // Download the PDF file
+  const blob = await response.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename || "disclosure.pdf";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}

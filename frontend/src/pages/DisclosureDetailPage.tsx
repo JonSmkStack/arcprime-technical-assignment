@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import { getDisclosure, updateDisclosure, deleteDisclosure } from "../api/disclosures";
+import { getDisclosure, updateDisclosure, deleteDisclosure, downloadDisclosurePDF } from "../api/disclosures";
 import type { Disclosure, DisclosureUpdate } from "../types/disclosure";
 
 type LoadingState =
@@ -396,9 +396,23 @@ export function DisclosureDetailPage() {
           <div className="grid grid-cols-2 gap-6 pt-4 border-t border-gray-200">
             {disclosure.original_filename && (
               <Section title="Original File">
-                <span className="font-mono text-sm">
-                  {disclosure.original_filename}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-sm">
+                    {disclosure.original_filename}
+                  </span>
+                  {disclosure.pdf_object_key ? (
+                    <button
+                      onClick={() => downloadDisclosurePDF(disclosure.id, disclosure.original_filename || undefined)}
+                      className="text-sm text-blue-600 hover:text-blue-700 underline"
+                    >
+                      Download
+                    </button>
+                  ) : (
+                    <span className="text-sm text-gray-400 italic">
+                      PDF not available
+                    </span>
+                  )}
+                </div>
               </Section>
             )}
             <Section title="Submitted">

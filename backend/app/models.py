@@ -45,6 +45,7 @@ class Disclosure(DisclosureBase):
     status: str
     review_notes: str | None = None
     original_filename: str | None
+    pdf_object_key: str | None = None
     created_at: datetime
     updated_at: datetime
 
